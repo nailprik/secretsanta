@@ -44,3 +44,10 @@ class RoomMember(models.Model):
     wish = models.TextField(blank=True, null=True)
     is_admin = models.BooleanField(default=False)
 
+
+class Answers(models.Model):
+    name = models.CharField(max_length=12, unique=True)
+    command = models.CharField(max_length=12,unique=True)
+    inline_keyboard = models.JSONField(null=True)
+    text = models.TextField(verbose_name="Текст сообщения")
+

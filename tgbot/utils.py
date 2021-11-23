@@ -1,4 +1,5 @@
 import json
+import random
 
 import requests
 from django.core.exceptions import ValidationError, ObjectDoesNotExist
@@ -6,35 +7,7 @@ from django.http import JsonResponse
 
 from secretsanta.settings import TELEGRAM_URL, TELEGRAM_BOT_TOKEN, BASE_URL
 from tgbot.models import Chat, Member, Room, RoomMember
-
-
-def mailing(text, room):
-    pass
-
-
-def edit_message(text, chat_id, message_id, reply_markup=None):
-    data = {
-        "chat_id": chat_id,
-        "text": text,
-        "message_id": message_id,
-        "reply_markup": reply_markup,
-        "parse_mode": "Markdown"
-    }
-    response = requests.post(f"{TELEGRAM_URL}/bot{TELEGRAM_BOT_TOKEN}/editMessageText", data=data)
-    print(response.content)
-    return response.content
-
-
-def send_message(text, chat_id, reply_markup=None):
-    data = {
-        "chat_id": chat_id,
-        "text": text,
-        "reply_markup": reply_markup,
-        "parse_mode": "Markdown"
-    }
-    response = requests.post(f"{TELEGRAM_URL}/bot{TELEGRAM_BOT_TOKEN}/sendMessage", data=data)
-    #print(response.content)
-    return response.content
+from tgbot.tasks import edit_message, send_message, mailing
 
 
 def set_webhook():
@@ -56,48 +29,35 @@ def message_handler(message):
         member.state = 1
         answer = "Здравствуйте, введите ваше имя"
         member.save()
-        send_message(answer,chat.id)
-        return JsonResponse({"ok": "POST request processed"})
-    if member.state == 1:
+    elif member.state == 1:
         if message["text"].isalpha():
             member.first_name = message["text"]
             member.state = 2
             answer = "Введите фамилию"
-            send_message(answer, chat.id)
             member.save()
-            return JsonResponse({"ok": "POST request processed"})
         else:
             answer = "Введите корректное имя (используйте только буквы)"
-            send_message(answer, chat.id)
-            return JsonResponse({"ok": "POST request processed"})
-    if member.state == 2:
+    elif member.state == 2:
         if message["text"].isalpha():
             member.last_name = message["text"]
             member.state = 0
             answer = "Теперь вы можете создать или присоединиться к новой игре. Доступные команды вы можете " \
                      "посмотреть отправив /help "
-            send_message(answer, chat.id)
             member.save()
-            return JsonResponse({"ok": "POST request processed"})
+            send_message.delay(answer, chat.id)
         else:
             answer = "Введите корректную фамилию"
-            send_message(answer, chat.id)
-            return JsonResponse({"ok": "POST request processed"})
-    if member.state == 3:
+    elif member.state == 3:
         if not message["text"].startswith('/'):
             current_room = Room.objects.create(name=message["text"])
             RoomMember.objects.create(member=member, room=current_room, is_admin=True)
             member.last_room = current_room
             member.state = 4
             answer = "Введите описание комнаты"
-            send_message(answer, chat.id)
             member.save()
-            return JsonResponse({"ok": "POST request processed"})
         else:
             answer = "Недопустимо начинать название с символа '/'. Введите корректное название"
-            send_message(answer, chat.id)
-            return JsonResponse({"ok": "POST request processed"})
-    if member.state == 4:
+    elif member.state == 4:
         if not message["text"].startswith('/'):
             current_room = member.last_room
             current_room.description = message["text"]
@@ -107,13 +67,9 @@ def message_handler(message):
             answer = f"Комната создана.\nНазвание: *{current_room.name}*\nОписание: *{current_room.description}*\n" \
                      f"Идентификатор:\n`{current_room.id}`\nПришлите этот идентификатор другим участникам для " \
                      f"подключения "
-            send_message(answer, chat.id)
-            return JsonResponse({"ok": "POST request processed"})
         else:
             answer = "Недопустимо начинать описание с символа '/'. Введите корректное описание"
-            send_message(answer, chat.id)
-            return JsonResponse({"ok": "POST request processed"})
-    if member.state == 5:
+    elif member.state == 5:
         if not message["text"].startswith('/'):
             try:
                 current_room = Room.objects.get(id=message["text"])
@@ -130,77 +86,86 @@ def message_handler(message):
                 answer = "Комната с таким идентификатором не найдена. Попробуйте еще раз или создайте свою игру"
             member.state = 0
             member.save()
-            send_message(answer, chat.id)
-            return JsonResponse({"ok": "POST request processed"})
         else:
             answer = "Комната с таким идентификатором не найдена. Попробуйте еще раз или создайте свою игру"
-            send_message(answer, chat.id)
-            return JsonResponse({"ok": "POST request processed"})
-    if member.state == 7:
+    elif member.state == 6:
+        if not message["text"].startswith('/'):
+            current_room = member.last_room
+            member.state = 0
+            member.save()
+            try:
+                room_member = RoomMember.objects.get(member=member, room=current_room)
+                room_member.wish = message["text"]
+                room_member.save()
+                answer = 'Ваше пожелание сохранено'
+            except ObjectDoesNotExist:
+                answer = 'Произошла ошибка, попробуйте позже'
+        else:
+            answer = "Недопустимо начинать пожелание с символа '/'. Введите корректное пожелание"
+    elif member.state == 7:
         if not message["text"].startswith('/'):
             current_room = member.last_room
             current_room.name = message["text"]
             member.state = 0
             answer = f"Новое название комнаты:*{current_room.name}*"
-            send_message(answer, chat.id)
             member.save()
             current_room.save()
-            return JsonResponse({"ok": "POST request processed"})
         else:
             answer = "Недопустимо начинать название с символа '/'. Введите корректное название"
-            send_message(answer, chat.id)
-            return JsonResponse({"ok": "POST request processed"})
-    if member.state == 8:
+    elif member.state == 8:
         if not message["text"].startswith('/'):
             current_room = member.last_room
             current_room.description = message["text"]
             member.state = 0
             answer = f"Новое описание комнаты:*{current_room.description}*"
-            send_message(answer, chat.id)
             member.save()
             current_room.save()
-            return JsonResponse({"ok": "POST request processed"})
         else:
-            answer = "Недопустимо начинать название с символа '/'. Введите корректное название"
-            send_message(answer, chat.id)
-            return JsonResponse({"ok": "POST request processed"})
-
-
-
-    if member.state == 0:
+            answer = "Недопустимо начинать описание с символа '/'. Введите корректное название"
+    elif member.state == 0:
         if message["text"].startswith('/'):
             command = message["text"]
-            if command == '/newgame':
+            if command == '/newgame':#TODO может сделать кнопками
                 member.state = 3
                 answer = "Введите название комнаты"
-                send_message(answer, chat.id)
+                send_message.delay(answer, chat.id)
                 member.save()
                 return JsonResponse({"ok": "POST request processed"})
-            elif command == '/connect':
+            elif command == '/connect':#TODO тоже кнопками
                 member.state = 5
                 answer = "Введите идентификатор комнаты"
-                send_message(answer, chat.id)
+                send_message.delay(answer, chat.id)
                 member.save()
                 return JsonResponse({"ok": "POST request processed"})
-            elif command == '/list':
+            elif command == '/list':#TODO Добавить функционал списка участников в майрумс
                 answer = "Введите идентификатор комнаты"
-                send_message(answer, chat.id)
+                send_message.delay(answer, chat.id)
                 return JsonResponse({"ok": "POST request processed"})
             elif command == '/myrooms':
-                answer = "Выберите комнату:"
                 rooms = Room.objects.filter(room_member__member=member).values_list('id','name')
-                reply_markup = json.dumps({"inline_keyboard": [[{"text": name, "callback_data": str(uid)}] for (uid, name) in rooms]})
-                print(reply_markup)
-                send_message(answer, chat.id, reply_markup)
+                if rooms:
+                    answer = "Выберите комнату:"
+                    reply_markup = json.dumps(
+                        {"inline_keyboard": [[{"text": name, "callback_data": str(uid)}] for (uid, name) in rooms]})
+                    send_message.delay(answer, chat.id, reply_markup)
+                else:
+                    answer = "Вы не участвуете ни в одной игре. Создайте свою!"
+                    send_message.delay(answer, chat.id)
+                return JsonResponse({"ok": "POST request processed"})
+            elif command == '/help':
+                answer = "/newgame - Создание новой комнаты\n/connect - присодединиться к существующей игре\n/myrooms- список моих комнат\n"
+                send_message.delay(answer, chat.id)
                 return JsonResponse({"ok": "POST request processed"})
             else:
                 answer = "Неизвестная команда. Доступные команды вы можете посмотреть отправив /help"
-                send_message(answer, chat.id)
+                send_message.delay(answer, chat.id)
                 return JsonResponse({"ok": "POST request processed"})
-        else:
+        else:#TODO Кажется повторение ниже
             answer = "Вы можете создать или присоединиться к новой игре. Доступные команды вы можете посмотреть отправив /help"
-            send_message(answer, chat.id)
-            return JsonResponse({"ok": "POST request processed"})
+    else:
+        answer = "Вы можете создать или присоединиться к новой игре. Доступные команды вы можете посмотреть отправив /help"
+    send_message.delay(answer, chat.id)
+    return JsonResponse({"ok": "POST request processed"})
 
 
 def callback_handler(callback_query):
@@ -232,18 +197,26 @@ def callback_handler(callback_query):
             if not current_room.is_started:
                 exit_room_btn = [{'text': 'Покинтуть комнату', 'callback_data': 'exit_room'}]
                 inline_keyboard.append(exit_room_btn)
+            else:
+                watch_receiver_btn = [{'text': 'Инфо о получателе', 'callback_data': 'watch_receiver'}]
+                inline_keyboard.append(watch_receiver_btn)
             edit_wish_btn = [{'text': 'Изменить пожелание', 'callback_data': 'edit_wish'}]
-            watch_receiver_btn = [{'text': 'Инфо о получателе', 'callback_data': 'watch_receiver'}]
             inline_keyboard.append(edit_wish_btn)
-            inline_keyboard.append(watch_receiver_btn)
         elif data == 'start_room':
             current_room = member.last_room
-            member_count = RoomMember.objects.filter(room=current_room).count()
-            answer = f"Вы уверены, что хотите начть игру? Количество участников: {member_count}"
-            accept_btn = [{'text': 'Да', 'callback_data': 'accept_start'}]
-            decline_btn = [{'text': 'Отмена', 'callback_data': 'decline_start'}]
-            inline_keyboard.append(accept_btn)
-            inline_keyboard.append(decline_btn)
+            try:
+                room_member = RoomMember.objects.get(room=current_room, member=member, is_admin=True)
+                member_count = RoomMember.objects.filter(room=current_room).count()
+                if member_count < 2:
+                    answer = "Вы не можете начать игру с одним участником"
+                else:
+                    answer = f"Вы уверены, что хотите начть игру? Количество участников: {member_count}"
+                    accept_btn = [{'text': 'Да', 'callback_data': 'accept_start'}]
+                    decline_btn = [{'text': 'Отмена', 'callback_data': 'decline_start'}]
+                    inline_keyboard.append(accept_btn)
+                    inline_keyboard.append(decline_btn)
+            except ObjectDoesNotExist:
+                answer = 'Вы не являетесь админом этой комнаты!'
         elif data == 'edit_room_name':
             member.state = 7
             answer = "Введите название комнаты"
@@ -256,10 +229,20 @@ def callback_handler(callback_query):
             current_room = member.last_room
             current_room.is_started = True
             current_room.save()
+            member_list = list(RoomMember.objects.filter(room=current_room))
+            random.shuffle(member_list)
+            answer = ''
+            for i in range(len(member_list) - 1, -1, -1):
+                member_list[i].receiver = member_list[i-1].member
+                member_list[i].save()
+                answer += f'{member_list[i].member.first_name} -> {member_list[i].receiver.first_name}\n'
             answer = f'Игра комнаты {current_room.name} с идентификатором\n`{current_room.id}`\nначалась!' \
             'Скоро вам придет сообщение с информацией о получателе. Если сообщение не придет, вы можете посмотреть получателя в инофрмации о комнате'
-            mailing(answer, current_room)
-        elif data == "decline_start":
+            recipients = [room_member.member.chat.id for room_member in member_list]
+            mailing.delay(answer, recipients)
+            send_message.delay(answer, chat.id)
+            return JsonResponse({"ok": "POST request processed"})
+        elif data == "decline_start": #TODO исправить повторение кода
             current_room = member.last_room
             answer = f"Выбрана комната *{current_room.name}* с идентификатором\n`{current_room.id}`\n Что вы хотите сделать?"
             member.last_room = current_room
@@ -282,8 +265,6 @@ def callback_handler(callback_query):
             inline_keyboard.append(edit_wish_btn)
             inline_keyboard.append(watch_receiver_btn)
         elif data == 'exit_room':
-            current_room = member.last_room
-            member_count = RoomMember.objects.filter(room=current_room).count()
             answer = f"Вы уверены, что хотите покинуть комнату?"
             accept_btn = [{'text': 'Да', 'callback_data': 'accept_exit'}]
             decline_btn = [{'text': 'Отмена', 'callback_data': 'decline_exit'}]
@@ -316,10 +297,78 @@ def callback_handler(callback_query):
             watch_receiver_btn = [{'text': 'Инфо о получателе', 'callback_data': 'watch_receiver'}]
             inline_keyboard.append(edit_wish_btn)
             inline_keyboard.append(watch_receiver_btn)
+        elif data == 'delete_room':
+            current_room = member.last_room
+            try:
+                room_member = RoomMember.objects.get(room=current_room, member=member, is_admin=True)
+                answer = f"Вы уверены, что хотите удалить игру? Это действие не отменить."
+                accept_btn = [{'text': 'Да', 'callback_data': 'accept_delete'}]
+                decline_btn = [{'text': 'Отмена', 'callback_data': 'decline_delete'}]
+                inline_keyboard.append(accept_btn)
+                inline_keyboard.append(decline_btn)
+            except ObjectDoesNotExist:
+                answer = 'Вы не являетесь админом этой комнаты!'
+        elif data == "accept_delete":
+            try:
+                current_room = member.last_room
+                room_name, room_id = current_room.name, current_room.id
+                recipients = list(Member.objects.filter(roommember__room=current_room, roommember__is_admin=False).values_list('chat_id', flat=True))
+            except ObjectDoesNotExist:
+                answer = 'Произошла ошибка. Комната не найдена'
+                edit_message.delay(answer, chat.id, message["message_id"], [])
+                return JsonResponse({"ok": "POST request processed"})
+            try:
+                current_room.delete()
+                answer = f'Комната *{room_name}* с идентификатором `{room_id}` удалена! Всем участникам придет сообщение об удалении.'
+                edit_message.delay(answer, chat.id, message["message_id"], [])
+                answer = f'Комната *{room_name}* с идентификатором `{room_id}` удалена!'
+                mailing.delay(answer, recipients)
+                return JsonResponse({"ok": "POST request processed"})
+            except:
+                answer = 'Произошла ошибка. Комната не была удалена'
+                send_message.delay(answer, chat.id)
+                return JsonResponse({"ok": "POST request processed"})
+        elif data == "decline_delete":
+            current_room = member.last_room
+            answer = f"Выбрана комната *{current_room.name}* с идентификатором\n`{current_room.id}`\n Что вы хотите сделать?"
+            member.last_room = current_room
+            member.save()
+            room_member = RoomMember.objects.get(room=current_room, member=member)
+            if room_member.is_admin:
+                if not current_room.is_started:
+                    start_room_btn = [{'text': 'Начать игру', 'callback_data': 'start_room'}]
+                else:
+                    start_room_btn = []
+                edit_room_name_btn = [{'text': 'Изменить название', 'callback_data': 'edit_room_name'}]
+                edit_room_description_btn = [{'text': 'Изменить описание', 'callback_data': 'edit_room_description'}]
+                delete_room_btn = [{'text': 'Удалить', 'callback_data': 'delete_room'}]
+                inline_keyboard = [start_room_btn, edit_room_name_btn, edit_room_description_btn, delete_room_btn]
+            if not current_room.is_started:
+                exit_room_btn = [{'text': 'Покинтуть комнату', 'callback_data': 'exit_room'}]
+                inline_keyboard.append(exit_room_btn)
+            edit_wish_btn = [{'text': 'Изменить пожелание', 'callback_data': 'edit_wish'}]
+            watch_receiver_btn = [{'text': 'Инфо о получателе', 'callback_data': 'watch_receiver'}]
+            inline_keyboard.append(edit_wish_btn)
+            inline_keyboard.append(watch_receiver_btn)
+        elif data == 'edit_wish':
+            member.state = 6
+            member.save()
+            answer = "Опишите свое желание, можно оставлять ссылки."
+        elif data == 'watch_receiver':
+            current_room = member.last_room
+            try:
+                room_member = RoomMember.objects.get(room=current_room, member=member)
+                receiver = room_member.receiver
+                room_receiver = RoomMember.objects.get(room=current_room, member=receiver)
+                answer = f'Вы дарите подарок :\n{receiver.first_name}  {receiver.last_name}\nПожелание:\n`{room_receiver.wish}`'
+            except ObjectDoesNotExist:
+                answer = "Что-то пошло не так. Попробуйте еще раз."
+        else:
+            answer = "Что-то пошло не так. Попробуйте еще раз."
     else:
         answer = "Что-то пошло не так. Попробуйте еще раз."
     reply_markup = json.dumps({"inline_keyboard":inline_keyboard})
-    edit_message(answer, chat.id, message["message_id"], reply_markup)
+    edit_message.delay(answer, chat.id, message["message_id"], reply_markup)
     return JsonResponse({"ok": "POST request processed"})
 
 
